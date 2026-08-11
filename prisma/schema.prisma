@@ -1,0 +1,245 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum DeviceStatusValue {
+  OFFLINE
+  ONLINE
+  STREAMING
+  ERROR
+}
+
+enum StreamStatus {
+  OFFLINE
+  STARTING
+  LIVE
+  STOPPING
+  ENDED
+  ERROR
+}
+
+enum VideoStatus {
+  RECORDING
+  UPLOADING
+  COMPLETED
+  FAILED
+}
+
+enum CommandName {
+  START
+  STOP
+}
+
+enum CommandTarget {
+  STREAM
+  RECORDING
+}
+
+enum CommandStatus {
+  PENDING
+  CLAIMED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum SyncAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+enum SyncInboxStatus {
+  PENDING
+  APPLIED
+  IGNORED
+  FAILED
+}
+
+enum SyncOutboxStatus {
+  PENDING
+  SENT
+  APPLIED
+  FAILED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  fullName     String     @map("full_name")
+  role         UserRole   @default(OPERATOR)
+  status       UserStatus @default(ACTIVE)
+  version      Int        @default(1)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  streams  Stream[]
+  videos   Video[]
+  commands Command[]
+
+  @@map("users")
+}
+
+model Device {
+  id           String            @id
+  name         String
+  status       DeviceStatusValue @default(OFFLINE)
+  sourceReady  Boolean           @default(false) @map("source_ready")
+  streaming    Boolean           @default(false)
+  recording    Boolean           @default(false)
+  lastError    String?           @map("last_error")
+  lastSeenAt   DateTime?         @map("last_seen_at")
+  version      Int               @default(1)
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  streams  Stream[]
+  videos   Video[]
+  commands Command[]
+
+  @@map("devices")
+}
+
+model Stream {
+  id                  String       @id @default(uuid()) @db.Uuid
+  userId              String       @map("user_id") @db.Uuid
+  deviceId            String       @map("device_id")
+  title               String
+  status              StreamStatus @default(OFFLINE)
+  mediasoupStreamId   String?      @map("mediasoup_stream_id")
+  mediasoupProducerId String?      @map("mediasoup_producer_id")
+  playbackUrl         String?      @map("playback_url")
+  startedAt           DateTime?    @map("started_at")
+  endedAt             DateTime?    @map("ended_at")
+  lastError           String?      @map("last_error")
+  version             Int          @default(1)
+  createdAt           DateTime     @default(now()) @map("created_at")
+  updatedAt           DateTime     @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device   Device    @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  videos   Video[]
+  commands Command[]
+
+  @@index([userId, status])
+  @@index([deviceId, status])
+  @@map("streams")
+}
+
+model Video {
+  id              String      @id @default(uuid()) @db.Uuid
+  userId          String      @map("user_id") @db.Uuid
+  streamId        String?     @map("stream_id") @db.Uuid
+  deviceId        String      @map("device_id")
+  title           String
+  status          VideoStatus @default(RECORDING)
+  edgeLocalPath   String?     @map("edge_local_path")
+  cloudPath       String?     @map("cloud_path")
+  playbackUrl     String?     @map("playback_url")
+  startedAt       DateTime?   @map("started_at")
+  endedAt         DateTime?   @map("ended_at")
+  uploadedAt      DateTime?   @map("uploaded_at")
+  durationSeconds Int?        @map("duration_seconds")
+  sizeBytes       BigInt?     @map("size_bytes")
+  frameCount      BigInt?     @map("frame_count")
+  droppedFrames   BigInt?     @map("dropped_frames")
+  version         Int         @default(1)
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stream   Stream?   @relation(fields: [streamId], references: [id], onDelete: SetNull)
+  device   Device    @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  commands Command[]
+
+  @@index([userId, status])
+  @@index([streamId])
+  @@map("videos")
+}
+
+model Command {
+  id            String        @id @default(uuid()) @db.Uuid
+  userId        String        @map("user_id") @db.Uuid
+  streamId      String?       @map("stream_id") @db.Uuid
+  videoId       String?       @map("video_id") @db.Uuid
+  deviceId      String        @map("device_id")
+  command       CommandName
+  target        CommandTarget
+  status        CommandStatus @default(PENDING)
+  source        String        @default("cloud")
+  claimedBy     String?       @map("claimed_by")
+  resultMessage String?       @map("result_message")
+  errorMessage  String?       @map("error_message")
+  claimedAt     DateTime?     @map("claimed_at")
+  processedAt   DateTime?     @map("processed_at")
+  version       Int           @default(1)
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stream Stream? @relation(fields: [streamId], references: [id], onDelete: SetNull)
+  video  Video?  @relation(fields: [videoId], references: [id], onDelete: SetNull)
+  device Device  @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@index([deviceId, status])
+  @@index([userId, createdAt])
+  @@map("commands")
+}
+
+model SyncOutbox {
+  id           String           @id @default(uuid()) @db.Uuid
+  eventId      String           @unique @default(uuid()) @map("event_id") @db.Uuid
+  source       String           @default("cloud")
+  entityType   String           @map("entity_type")
+  entityId     String           @map("entity_id")
+  action       SyncAction
+  version      Int
+  occurredAt   DateTime         @map("occurred_at")
+  status       SyncOutboxStatus @default(PENDING)
+  data         Json
+  attemptCount Int              @default(0) @map("attempt_count")
+  lastError    String?          @map("last_error")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  sentAt       DateTime?        @map("sent_at")
+  ackedAt      DateTime?        @map("acked_at")
+
+  @@index([entityType, entityId])
+  @@index([status])
+  @@map("sync_outbox")
+}
+
+model SyncInbox {
+  id          String          @id @default(uuid()) @db.Uuid
+  eventId     String          @unique @map("event_id") @db.Uuid
+  source      String
+  entityType  String          @map("entity_type")
+  entityId    String          @map("entity_id")
+  action      SyncAction
+  version     Int
+  occurredAt  DateTime        @map("occurred_at")
+  status      SyncInboxStatus @default(PENDING)
+  data        Json
+  message     String?
+  receivedAt  DateTime        @default(now()) @map("received_at")
+  processedAt DateTime?       @map("processed_at")
+
+  @@index([entityType, entityId])
+  @@index([status])
+  @@map("sync_inbox")
+}
