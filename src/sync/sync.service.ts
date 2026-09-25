@@ -197,6 +197,7 @@ export class SyncService extends EventEmitter {
       },
       update: {
         status: data.status === undefined ? undefined : this.streamStatus(data.status),
+        mediasoupStreamId: this.optionalString(data.mediasoup_stream_id),
         mediasoupProducerId: this.optionalString(data.mediasoup_producer_id),
         playbackUrl: this.optionalString(data.playback_url),
         startedAt: this.optionalDate(data.started_at),
