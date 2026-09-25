@@ -210,15 +210,21 @@ export class SyncService extends EventEmitter {
 
   private async applyVideo(event: SyncEventMessage): Promise<ApplyResult> {
     const data = event.data;
-    await this.ensureDevice(this.requiredString(data.device_id, 'data.device_id'));
-    await this.ensureUser(this.requiredString(data.user_id, 'data.user_id'));
+    const deviceId = this.requiredString(data.device_id, 'data.device_id');
+    const userId = this.requiredString(data.user_id, 'data.user_id');
+    const streamId = this.optionalString(data.stream_id);
+    await this.ensureDevice(deviceId);
+    await this.ensureUser(userId);
+    if (streamId) {
+      await this.ensureStream(streamId, userId, deviceId);
+    }
     await this.prisma.video.upsert({
       where: { id: event.entity_id },
       create: {
         id: event.entity_id,
-        userId: this.requiredString(data.user_id, 'data.user_id'),
-        streamId: this.optionalString(data.stream_id),
-        deviceId: this.requiredString(data.device_id, 'data.device_id'),
+        userId,
+        streamId,
+        deviceId,
         title: this.optionalString(data.title) ?? 'Recording',
         status: this.videoStatus(data.status),
         edgeLocalPath: this.optionalString(data.edge_local_path),
@@ -252,16 +258,22 @@ export class SyncService extends EventEmitter {
 
   private async applyCommand(event: SyncEventMessage): Promise<ApplyResult> {
     const data = event.data;
-    await this.ensureDevice(this.requiredString(data.device_id, 'data.device_id'));
-    await this.ensureUser(this.requiredString(data.user_id, 'data.user_id'));
+    const deviceId = this.requiredString(data.device_id, 'data.device_id');
+    const userId = this.requiredString(data.user_id, 'data.user_id');
+    const streamId = this.optionalString(data.stream_id);
+    await this.ensureDevice(deviceId);
+    await this.ensureUser(userId);
+    if (streamId) {
+      await this.ensureStream(streamId, userId, deviceId);
+    }
     await this.prisma.command.upsert({
       where: { id: event.entity_id },
       create: {
         id: event.entity_id,
-        userId: this.requiredString(data.user_id, 'data.user_id'),
-        streamId: this.optionalString(data.stream_id),
+        userId,
+        streamId,
         videoId: this.optionalString(data.video_id),
-        deviceId: this.requiredString(data.device_id, 'data.device_id'),
+        deviceId,
         command: this.commandName(data.command),
         target: this.commandTarget(data.target),
         status: this.commandStatus(data.status),
@@ -305,6 +317,20 @@ export class SyncService extends EventEmitter {
     await this.prisma.device.upsert({
       where: { id },
       create: { id, name: id, status: DeviceStatusValue.OFFLINE },
+      update: {},
+    });
+  }
+
+  private async ensureStream(id: string, userId: string, deviceId: string) {
+    await this.prisma.stream.upsert({
+      where: { id },
+      create: {
+        id,
+        userId,
+        deviceId,
+        title: 'Synced stream',
+        status: StreamStatus.OFFLINE,
+      },
       update: {},
     });
   }
