@@ -174,6 +174,7 @@ model Video {
 }
 
 model Command {
+  queuePosition BigInt        @default(autoincrement()) @unique @map("queue_position")
   id            String        @id @default(uuid()) @db.Uuid
   userId        String        @map("user_id") @db.Uuid
   streamId      String?       @map("stream_id") @db.Uuid
@@ -203,6 +204,7 @@ model Command {
 }
 
 model SyncOutbox {
+  sequence     BigInt           @default(autoincrement()) @unique
   id           String           @id @default(uuid()) @db.Uuid
   eventId      String           @unique @default(uuid()) @map("event_id") @db.Uuid
   source       String           @default("cloud")

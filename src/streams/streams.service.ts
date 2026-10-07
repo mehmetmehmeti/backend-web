@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CommandName, CommandTarget, DeviceStatusValue, StreamStatus } from '@prisma/client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { asObject, optionalString, requiredString } from '../common/http-body';
@@ -42,6 +42,11 @@ export class StreamsService {
     const now = new Date();
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${deviceId}))`;
+      const active = await tx.stream.findFirst({
+        where: { deviceId, status: { in: [StreamStatus.STARTING, StreamStatus.LIVE, StreamStatus.STOPPING] } },
+      });
+      if (active) throw new ConflictException('This device already has an active stream');
       const device = await tx.device.upsert({
         where: { id: deviceId },
         create: {
@@ -121,6 +126,15 @@ export class StreamsService {
   async stop(userId: string, id: string) {
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.stream.findUnique({ where: { id } });
+      if (!current) throw new NotFoundException('Stream not found');
+      if (current.status === StreamStatus.ENDED || current.status === StreamStatus.STOPPING)
+        throw new ConflictException('Stream is already stopped or stopping');
+      const recordings = await tx.video.findMany({ where: { streamId: id, status: 'RECORDING' } });
+      for (const video of recordings) {
+        await this.commandsService.createCommand({ userId, deviceId: current.deviceId,
+          streamId: id, videoId: video.id, command: CommandName.STOP, target: CommandTarget.RECORDING }, tx);
+      }
       const stream = await tx.stream.update({
         where: { id },
         data: {

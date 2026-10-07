@@ -30,11 +30,18 @@ type ApplyResult = {
 
 @Injectable()
 export class SyncService extends EventEmitter {
+  private incoming: Promise<unknown> = Promise.resolve();
   constructor(private readonly prisma: PrismaService) {
     super();
   }
 
-  async processEvent(message: unknown): Promise<SyncAckMessage> {
+  processEvent(message: unknown): Promise<SyncAckMessage> {
+    const next = this.incoming.then(() => this.processOrderedEvent(message));
+    this.incoming = next.catch(() => undefined);
+    return next;
+  }
+
+  private async processOrderedEvent(message: unknown): Promise<SyncAckMessage> {
     let event: SyncEventMessage;
     try {
       event = this.parseEvent(message);
@@ -45,7 +52,7 @@ export class SyncService extends EventEmitter {
     const existing = await this.prisma.syncInbox.findUnique({
       where: { eventId: event.event_id },
     });
-    if (existing && existing.status !== SyncInboxStatus.FAILED) {
+    if (existing && [SyncInboxStatus.APPLIED, SyncInboxStatus.IGNORED].includes(existing.status as never)) {
       return this.appliedAck(event.event_id, 'Duplicate event ignored');
     }
 
@@ -104,6 +111,23 @@ export class SyncService extends EventEmitter {
   }
 
   private async applyRemoteEvent(event: SyncEventMessage): Promise<ApplyResult> {
+    if (event.action === 'delete') {
+      throw new BadRequestException('Deletion is not supported; disable users instead');
+    }
+    const select = { version: true, updatedAt: true };
+    const where = { id: event.entity_id };
+    const current = await (
+      event.entity_type === 'user' ? this.prisma.user.findUnique({ where, select }) :
+      event.entity_type === 'device' ? this.prisma.device.findUnique({ where, select }) :
+      event.entity_type === 'stream' ? this.prisma.stream.findUnique({ where, select }) :
+      event.entity_type === 'video' ? this.prisma.video.findUnique({ where, select }) :
+      this.prisma.command.findUnique({ where, select })
+    );
+    const incomingTime = this.date(event.data.updated_at, event.occurred_at);
+    if (current && (current.version > event.version ||
+        (current.version === event.version && current.updatedAt >= incomingTime))) {
+      return { status: SyncInboxStatus.IGNORED, message: 'Stale entity version ignored' };
+    }
     switch (event.entity_type) {
       case 'user':
         return this.applyUser(event);
@@ -121,16 +145,16 @@ export class SyncService extends EventEmitter {
   private async applyUser(event: SyncEventMessage): Promise<ApplyResult> {
     const data = event.data;
     await this.prisma.user.upsert({
-      where: { id: event.entity_id },
+      where: { id: event.entity_id, version: { lte: event.version } },
       create: {
         id: event.entity_id,
+        createdAt: this.date(data.created_at, event.occurred_at),
         email: this.requiredString(data.email, 'data.email'),
         passwordHash: this.requiredString(data.password_hash, 'data.password_hash'),
         fullName: this.requiredString(data.full_name, 'data.full_name'),
         role: this.userRole(data.role),
         status: this.userStatus(data.status),
         version: event.version,
-        createdAt: this.date(data.created_at, event.occurred_at),
         updatedAt: this.date(data.updated_at, event.occurred_at),
       },
       update: {
@@ -149,17 +173,19 @@ export class SyncService extends EventEmitter {
   private async applyDevice(event: SyncEventMessage): Promise<ApplyResult> {
     const data = event.data;
     await this.prisma.device.upsert({
-      where: { id: event.entity_id },
+      where: { id: event.entity_id, version: { lte: event.version } },
       create: {
         id: event.entity_id,
+        createdAt: this.date(data.created_at, event.occurred_at),
         name: this.optionalString(data.name) ?? event.entity_id,
         status: this.deviceStatus(data.status),
         sourceReady: Boolean(data.source_ready),
         streaming: Boolean(data.streaming),
         recording: Boolean(data.recording),
-        lastError: this.optionalString(data.last_error),
+        lastError: data.last_error === null ? null : this.optionalString(data.last_error),
         lastSeenAt: this.optionalDate(data.last_seen_at),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
       update: {
         name: this.optionalString(data.name),
@@ -167,9 +193,10 @@ export class SyncService extends EventEmitter {
         sourceReady: data.source_ready === undefined ? undefined : Boolean(data.source_ready),
         streaming: data.streaming === undefined ? undefined : Boolean(data.streaming),
         recording: data.recording === undefined ? undefined : Boolean(data.recording),
-        lastError: this.optionalString(data.last_error),
+        lastError: data.last_error === null ? null : this.optionalString(data.last_error),
         lastSeenAt: this.optionalDate(data.last_seen_at),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
     });
     return { status: SyncInboxStatus.APPLIED };
@@ -180,9 +207,10 @@ export class SyncService extends EventEmitter {
     await this.ensureDevice(this.requiredString(data.device_id, 'data.device_id'));
     await this.ensureUser(this.requiredString(data.user_id, 'data.user_id'));
     await this.prisma.stream.upsert({
-      where: { id: event.entity_id },
+      where: { id: event.entity_id, version: { lte: event.version } },
       create: {
         id: event.entity_id,
+        createdAt: this.date(data.created_at, event.occurred_at),
         userId: this.requiredString(data.user_id, 'data.user_id'),
         deviceId: this.requiredString(data.device_id, 'data.device_id'),
         title: this.optionalString(data.title) ?? 'Live stream',
@@ -192,8 +220,9 @@ export class SyncService extends EventEmitter {
         playbackUrl: this.optionalString(data.playback_url),
         startedAt: this.optionalDate(data.started_at),
         endedAt: this.optionalDate(data.ended_at),
-        lastError: this.optionalString(data.last_error),
+        lastError: data.last_error === null ? null : this.optionalString(data.last_error),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
       update: {
         status: data.status === undefined ? undefined : this.streamStatus(data.status),
@@ -202,8 +231,9 @@ export class SyncService extends EventEmitter {
         playbackUrl: this.optionalString(data.playback_url),
         startedAt: this.optionalDate(data.started_at),
         endedAt: this.optionalDate(data.ended_at),
-        lastError: this.optionalString(data.last_error),
+        lastError: data.last_error === null ? null : this.optionalString(data.last_error),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
     });
     return { status: SyncInboxStatus.APPLIED };
@@ -220,9 +250,10 @@ export class SyncService extends EventEmitter {
       await this.ensureStream(streamId, userId, deviceId);
     }
     await this.prisma.video.upsert({
-      where: { id: event.entity_id },
+      where: { id: event.entity_id, version: { lte: event.version } },
       create: {
         id: event.entity_id,
+        createdAt: this.date(data.created_at, event.occurred_at),
         userId,
         streamId,
         deviceId,
@@ -239,6 +270,7 @@ export class SyncService extends EventEmitter {
         frameCount: this.optionalBigInt(data.frame_count),
         droppedFrames: this.optionalBigInt(data.dropped_frames),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
       update: {
         status: data.status === undefined ? undefined : this.videoStatus(data.status),
@@ -252,6 +284,7 @@ export class SyncService extends EventEmitter {
         frameCount: this.optionalBigInt(data.frame_count),
         droppedFrames: this.optionalBigInt(data.dropped_frames),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
     });
     return { status: SyncInboxStatus.APPLIED };
@@ -268,9 +301,10 @@ export class SyncService extends EventEmitter {
       await this.ensureStream(streamId, userId, deviceId);
     }
     await this.prisma.command.upsert({
-      where: { id: event.entity_id },
+      where: { id: event.entity_id, version: { lte: event.version } },
       create: {
         id: event.entity_id,
+        createdAt: this.date(data.created_at, event.occurred_at),
         userId,
         streamId,
         videoId: this.optionalString(data.video_id),
@@ -285,6 +319,7 @@ export class SyncService extends EventEmitter {
         claimedAt: this.optionalDate(data.claimed_at),
         processedAt: this.optionalDate(data.processed_at),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
       update: {
         status: data.status === undefined ? undefined : this.commandStatus(data.status),
@@ -294,6 +329,7 @@ export class SyncService extends EventEmitter {
         claimedAt: this.optionalDate(data.claimed_at),
         processedAt: this.optionalDate(data.processed_at),
         version: event.version,
+        updatedAt: this.date(data.updated_at, event.occurred_at),
       },
     });
     return { status: SyncInboxStatus.APPLIED };
@@ -306,6 +342,7 @@ export class SyncService extends EventEmitter {
         id,
         email: `synced-${id}@edge.local`,
         passwordHash: 'synced-user-no-local-login',
+        version: 0,
         fullName: 'Synced user',
         role: UserRole.OPERATOR,
         status: UserStatus.ACTIVE,
@@ -317,7 +354,7 @@ export class SyncService extends EventEmitter {
   private async ensureDevice(id: string) {
     await this.prisma.device.upsert({
       where: { id },
-      create: { id, name: id, status: DeviceStatusValue.OFFLINE },
+      create: { id, name: id, status: DeviceStatusValue.OFFLINE, version: 0 },
       update: {},
     });
   }
@@ -330,6 +367,7 @@ export class SyncService extends EventEmitter {
         userId,
         deviceId,
         title: 'Synced stream',
+        version: 0,
         status: StreamStatus.OFFLINE,
       },
       update: {},
@@ -430,6 +468,7 @@ export class SyncService extends EventEmitter {
   }
 
   private optionalBigInt(value: unknown) {
+    if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value);
     const numberValue = this.optionalNumber(value);
     return numberValue === undefined ? undefined : BigInt(Math.trunc(numberValue));
   }

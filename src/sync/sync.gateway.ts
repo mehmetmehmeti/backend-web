@@ -18,6 +18,8 @@ export class SyncGateway implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SyncGateway.name);
   private readonly server = new WebSocketServer({ noServer: true });
   private readonly clients = new Set<WebSocket>();
+  private flushTimer?: NodeJS.Timeout;
+  private sending = false;
 
   constructor(
     private readonly adapterHost: HttpAdapterHost,
@@ -48,9 +50,11 @@ export class SyncGateway implements OnModuleInit, OnModuleDestroy {
     this.syncOutbox.on(OUTBOX_EVENT_CREATED, () => {
       void this.sendPendingEvents();
     });
+    this.flushTimer = setInterval(() => void this.sendPendingEvents(), 1000);
   }
 
   onModuleDestroy() {
+    if (this.flushTimer) clearInterval(this.flushTimer);
     for (const client of this.clients) {
       client.close();
     }
@@ -101,6 +105,9 @@ export class SyncGateway implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sendPendingEvents(target?: WebSocket) {
+    if (this.sending) return;
+    this.sending = true;
+    try {
     const clients = target ? [target] : [...this.clients];
     const openClients = clients.filter((client) => client.readyState === WebSocket.OPEN);
     if (!openClients.length) {
@@ -113,6 +120,11 @@ export class SyncGateway implements OnModuleInit, OnModuleDestroy {
         this.sendJson(client, event);
       }
       await this.syncOutbox.markSent(event.event_id);
+    }
+    } catch (error) {
+      this.logger.warn(error instanceof Error ? error.message : 'Sync send failed');
+    } finally {
+      this.sending = false;
     }
   }
 
@@ -151,4 +163,3 @@ export class SyncGateway implements OnModuleInit, OnModuleDestroy {
     return typeof payload === 'object' && payload !== null && 'type' in payload && payload.type === 'ack';
   }
 }
-

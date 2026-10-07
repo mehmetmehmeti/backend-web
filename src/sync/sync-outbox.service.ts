@@ -64,7 +64,7 @@ export class SyncOutboxService extends EventEmitter {
           in: [SyncOutboxStatus.PENDING, SyncOutboxStatus.SENT, SyncOutboxStatus.FAILED],
         },
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { sequence: 'asc' },
       take: limit,
     });
 
@@ -72,8 +72,8 @@ export class SyncOutboxService extends EventEmitter {
   }
 
   async markSent(eventId: string) {
-    await this.prisma.syncOutbox.update({
-      where: { eventId },
+    await this.prisma.syncOutbox.updateMany({
+      where: { eventId, status: { not: SyncOutboxStatus.APPLIED } },
       data: {
         status: SyncOutboxStatus.SENT,
         sentAt: new Date(),
@@ -142,4 +142,3 @@ export class SyncOutboxService extends EventEmitter {
     }
   }
 }
-
