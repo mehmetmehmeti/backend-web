@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { CurrentUser, type AuthenticatedUser } from '../auth/current-user.decorator';
 import { VideosService } from './videos.service';
 
@@ -7,13 +7,13 @@ export class VideosController {
   constructor(private readonly videosService: VideosService) {}
 
   @Get('videos')
-  list(@Query() query: Record<string, unknown>) {
-    return this.videosService.list(query);
+  list(@CurrentUser() user: AuthenticatedUser, @Query() query: Record<string, unknown>) {
+    return this.videosService.list({ ...query, user_id: user.id });
   }
 
   @Get('videos/:id')
-  get(@Param('id') id: string) {
-    return this.videosService.get(id);
+  get(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.videosService.get(id, user.id);
   }
 
   @Post('streams/:streamId/recordings/start')
@@ -34,8 +34,4 @@ export class VideosController {
     return this.videosService.stopRecording(user.id, streamId, body);
   }
 
-  @Patch('videos/:id/uploaded')
-  markUploaded(@Param('id') id: string, @Body() body: unknown) {
-    return this.videosService.markUploaded(id, body);
-  }
 }

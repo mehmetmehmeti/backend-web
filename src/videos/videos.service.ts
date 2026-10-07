@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CommandName, CommandTarget, VideoStatus } from '@prisma/client';
 import { asObject, optionalNumber, optionalString } from '../common/http-body';
 import { videoDto } from '../common/serializers';
@@ -27,9 +27,9 @@ export class VideosService {
     return { videos: videos.map(videoDto) };
   }
 
-  async get(id: string) {
+  async get(id: string, userId: string) {
     const video = await this.prisma.video.findUnique({ where: { id } });
-    if (!video) {
+    if (!video || video.userId !== userId) {
       throw new NotFoundException('Video not found');
     }
     return { video: videoDto(video) };
@@ -40,9 +40,13 @@ export class VideosService {
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       const stream = await tx.stream.findUnique({ where: { id: streamId } });
-      if (!stream) {
+      if (!stream || stream.userId !== userId) {
         throw new NotFoundException('Stream not found');
       }
+
+      if (stream.status !== 'LIVE') throw new ConflictException('Stream must be live before recording');
+      const active = await tx.video.findFirst({ where: { deviceId: stream.deviceId, status: 'RECORDING' } });
+      if (active) throw new ConflictException('This device is already recording');
 
       const video = await tx.video.create({
         data: {
@@ -96,7 +100,7 @@ export class VideosService {
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       const stream = await tx.stream.findUnique({ where: { id: streamId } });
-      if (!stream) {
+      if (!stream || stream.userId !== userId) {
         throw new NotFoundException('Stream not found');
       }
 
@@ -106,9 +110,11 @@ export class VideosService {
             where: { streamId, status: VideoStatus.RECORDING },
             orderBy: { createdAt: 'desc' },
           });
-      if (!existingVideo) {
+      if (!existingVideo || existingVideo.streamId !== streamId || existingVideo.userId !== userId) {
         throw new NotFoundException('Recording video not found');
       }
+      if (existingVideo.status !== VideoStatus.RECORDING)
+        throw new ConflictException('Recording has already stopped');
 
       const video = await tx.video.update({
         where: { id: existingVideo.id },

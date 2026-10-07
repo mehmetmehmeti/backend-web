@@ -3,4 +3,4 @@ dist/
 .env
 coverage/
 *.log
-
+/recordings/
