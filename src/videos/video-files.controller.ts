@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, NotFoundException, Param, Post, Put, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadRequestException, ConflictException, Controller, Get, NotFoundException, Param, Post, Put, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
@@ -28,6 +28,9 @@ export class VideoFilesController {
     if (!video) throw new NotFoundException('Video metadata has not synchronized yet');
     if (![VideoStatus.UPLOADING, VideoStatus.COMPLETED].includes(video.status as never))
       throw new BadRequestException('Recording has not finished');
+    // Upload completion must not outrank final metadata that is still in transit.
+    if (video.frameCount === null || video.frameCount <= 0n || !video.endedAt)
+      throw new ConflictException('Finalized recording metadata has not synchronized yet');
     const expectedHash = req.header('x-content-sha256');
     if (!expectedHash || !/^[a-f0-9]{64}$/.test(expectedHash))
       throw new BadRequestException('SHA-256 checksum is required');
@@ -69,7 +72,8 @@ export class VideoFilesController {
       throw new BadRequestException('Recording is not available yet');
     const token = sign({ sub: user.id, videoId: id, purpose: 'video-playback' },
       process.env.JWT_SECRET!, { expiresIn: '1h' });
-    return { url: `${video.playbackUrl}?ticket=${encodeURIComponent(token)}` };
+    const baseUrl = (process.env.PUBLIC_API_URL || 'http://localhost:3000').replace(/\/+$/, '');
+    return { url: `${baseUrl}/videos/${id}/file?ticket=${encodeURIComponent(token)}` };
   }
 
   @Public()
